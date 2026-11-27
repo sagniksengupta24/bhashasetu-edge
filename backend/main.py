@@ -12,16 +12,24 @@ from fastapi import FastAPI, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
-DB_PATH = os.environ.get("BHASHASETU_DB_PATH", "/data/bhashasetu.db")
+IS_VERCEL = bool(os.getenv("VERCEL"))
+DB_PATH = (
+    os.environ.get("DB_PATH")
+    or os.environ.get("BHASHASETU_DB_PATH")
+    or ("/tmp/bhashasetu.db" if IS_VERCEL else "/data/bhashasetu.db")
+)
 RATE_LIMIT_MAX = int(os.environ.get("BHASHASETU_RATE_LIMIT_PER_MIN", "60"))
 RATE_LIMIT_WINDOW_S = 60.0
 
 # In-memory per-IP sliding-window rate limiter
 _ip_windows: dict[str, deque[float]] = defaultdict(deque)
+_db_initialized_for: str | None = None
 
 
-def get_conn() -> sqlite3.Connection:
-    os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+def _connect() -> sqlite3.Connection:
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
@@ -30,7 +38,8 @@ def get_conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
-    conn = get_conn()
+    global _db_initialized_for
+    conn = _connect()
     try:
         conn.execute(
             """
@@ -47,8 +56,15 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_encounters_device_time ON fhir_encounters(device_id, received_at DESC)"
         )
         conn.commit()
+        _db_initialized_for = DB_PATH
     finally:
         conn.close()
+
+
+def get_conn() -> sqlite3.Connection:
+    if _db_initialized_for != DB_PATH:
+        init_db()
+    return _connect()
 
 
 @asynccontextmanager

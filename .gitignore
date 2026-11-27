@@ -11,3 +11,5 @@ backend/.pytest_cache/
 *.db
 *.db-wal
 *.db-shm
+demo/
+.vercel

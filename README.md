@@ -50,6 +50,13 @@ Open **`http://localhost:8080`** in Chrome, Edge, or Brave.
 > [!NOTE]
 > **Why `http://localhost:8080`?** Browsers treat `localhost` as a **secure context**, enabling microphone capture (`getUserMedia`), `crypto.subtle`, IndexedDB, Web Locks, and Service Worker registration without HTTPS certs or `.env` configuration.
 
+### Live Deployment (Vercel)
+`vercel.json` + `api/index.py` deploy both the Vite PWA (`dist/`) and the FastAPI `/api/*` sync backend on a single HTTPS origin with zero API keys (using ephemeral `/tmp/bhashasetu.db` SQLite on Vercel serverless functions and persistent Docker volume `/data/bhashasetu.db` locally):
+
+```bash
+npx vercel --prod
+```
+
 ---
 
 ## 2. System Architecture
