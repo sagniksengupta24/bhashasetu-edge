@@ -266,7 +266,7 @@ export function parseClinicalUtterance(
     highestSeverity = 'moderate';
   }
 
-  const primarySymptom = activeSymptoms[0] || 'general_malaise';
+  const primarySymptom = activeSymptoms[0] || 'none';
   const secondarySymptoms = activeSymptoms.slice(1);
 
   const snr = options?.snrDb ?? 18;
@@ -397,7 +397,9 @@ export function buildAnonymizedAbdmFhirBundle(params: {
     });
   };
 
-  pushSymptom(slots.primary_symptom, 'active', 0);
+  if (slots.primary_symptom !== 'none') {
+    pushSymptom(slots.primary_symptom, 'active', 0);
+  }
   slots.secondary_symptoms.forEach((s, i) => pushSymptom(s, 'active', i + 1));
   slots.resolved_symptoms.forEach((s, i) => pushSymptom(s, 'resolved', i));
   slots.negated_symptoms.forEach((s, i) => pushSymptom(s, 'negated', i));

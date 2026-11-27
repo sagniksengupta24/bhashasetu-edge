@@ -86,12 +86,18 @@ import {
 
 type ListenContext = 'consent' | 'symptom' | 'duration' | 'readback' | 'edit';
 
+interface BrowserSpeechRecognitionResult {
+  isFinal?: boolean;
+  0?: { transcript?: string };
+}
+
 interface BrowserSpeechRecognition {
   lang: string;
+  continuous: boolean;
   interimResults: boolean;
   maxAlternatives: number;
-  onresult: ((event: { results?: ArrayLike<ArrayLike<{ transcript?: string }>> }) => void) | null;
-  onerror: (() => void) | null;
+  onresult: ((event: { results?: ArrayLike<BrowserSpeechRecognitionResult> }) => void) | null;
+  onerror: ((event?: { error?: string }) => void) | null;
   onend: (() => void) | null;
   start: () => void;
   stop: () => void;
@@ -200,6 +206,9 @@ export default function App() {
   const whisperSessionRef = useRef<WhisperAudioSession | null>(null);
   const animFrameRef = useRef<number | null>(null);
   const recognitionRef = useRef<BrowserSpeechRecognition | null>(null);
+  const speechBufferRef = useRef<string>('');
+  const speechContextRef = useRef<ListenContext>('symptom');
+  const silenceTimerRef = useRef<number | null>(null);
   const liveSnrRef = useRef<number>(18);
   const recordsRef = useRef<DecryptedEncounter[]>(records);
   recordsRef.current = records;
@@ -603,6 +612,10 @@ export default function App() {
 
   const stopAudioHardware = useCallback(() => {
     setIsRecording(false);
+    if (silenceTimerRef.current) {
+      window.clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
     if (animFrameRef.current) {
       cancelAnimationFrame(animFrameRef.current);
       animFrameRef.current = null;
@@ -949,6 +962,18 @@ export default function App() {
         lowConfidenceFields: simOpts?.lowConfidenceFields,
       });
 
+      if (
+        parsed.slots.primary_symptom === 'none' &&
+        parsed.redFlagsTriggered.length === 0 &&
+        parsed.slots.resolved_symptoms.length === 0 &&
+        parsed.slots.negated_symptoms.length === 0
+      ) {
+        setRawTranscript(clean);
+        showToast('No symptom detected — please state your symptom or tap an icon', 'warn');
+        triggerAcousticStrike(activeLang);
+        return;
+      }
+
       setSlots(parsed.slots);
       setLowConfidenceFields(parsed.lowConfidenceFields);
       setNormalizedTokens(parsed.normalizedTokens);
@@ -1091,22 +1116,27 @@ export default function App() {
           return;
         }
       }
+      const buffered = speechBufferRef.current.trim();
+      speechBufferRef.current = '';
       stopAudioHardware();
+      if (buffered) {
+        setTypedInput('');
+        processUtteranceRef.current(buffered, speechContextRef.current, { snrDb: 19 });
+      }
       return;
     }
+
+    const SpeechRecCtor =
+      typeof window !== 'undefined'
+        ? ((window as unknown as Record<string, unknown>).SpeechRecognition ||
+            (window as unknown as Record<string, unknown>).webkitSpeechRecognition)
+        : null;
 
     setListenMode(context);
     setIsRecording(true);
     voiceEngine.stopSpeaking();
 
-    if (asrEngine === 'whisper_worker') {
-      if (workerState !== 'ready') {
-        setIsRecording(false);
-        setEngineDrawerOpen(true);
-        showToast('Load Whisper-Tiny Worker first, or switch to Browser Speech', 'warn');
-        return;
-      }
-
+    if (asrEngine === 'whisper_worker' && workerState === 'ready') {
       try {
         const session = await startWhisperDspCapture({
           onSnrUpdate: (snr) => {
@@ -1130,15 +1160,14 @@ export default function App() {
       return;
     }
 
-    const SpeechRecCtor =
-      typeof window !== 'undefined'
-        ? ((window as unknown as Record<string, unknown>).SpeechRecognition ||
-            (window as unknown as Record<string, unknown>).webkitSpeechRecognition)
-        : null;
-
     if (!SpeechRecCtor) {
       stopAudioHardware();
-      showToast('Browser Speech API unavailable — use Whisper Worker or Simulate', 'warn');
+      if (asrEngine === 'whisper_worker') {
+        setEngineDrawerOpen(true);
+        showToast('Download Offline Whisper model or use Simulate sheet', 'warn');
+      } else {
+        showToast('Browser Speech API unavailable — use Offline Whisper or Simulate', 'warn');
+      }
       return;
     }
 
@@ -1157,20 +1186,64 @@ export default function App() {
     try {
       const rec = new (SpeechRecCtor as new () => BrowserSpeechRecognition)();
       recognitionRef.current = rec;
+      speechBufferRef.current = '';
+      speechContextRef.current = context;
       rec.lang = LANGUAGE_META[lang].bcp47;
-      rec.interimResults = false;
+      rec.continuous = true;
+      rec.interimResults = true;
       rec.maxAlternatives = 1;
 
-      rec.onresult = (event) => {
-        const text = event.results?.[0]?.[0]?.transcript || '';
+      const finalizeSpeechBuffer = () => {
+        const text = speechBufferRef.current.trim();
+        speechBufferRef.current = '';
         stopAudioHardware();
-        processUtterance(text, context, { snrDb: 19 });
+        if (text) {
+          setTypedInput('');
+          processUtteranceRef.current(text, context, { snrDb: 19 });
+        } else {
+          triggerAcousticStrike(lang);
+        }
+      };
+
+      rec.onresult = (event) => {
+        if (!event.results) return;
+        let finalPart = '';
+        let interimPart = '';
+        for (let i = 0; i < event.results.length; i += 1) {
+          const res = event.results[i];
+          const chunk = res?.[0]?.transcript || '';
+          if (res?.isFinal) finalPart += `${chunk} `;
+          else interimPart += `${chunk} `;
+        }
+        const combined = `${finalPart}${interimPart}`.trim();
+        speechBufferRef.current = combined;
+        if (combined) setTypedInput(combined);
+
+        if (silenceTimerRef.current) window.clearTimeout(silenceTimerRef.current);
+        silenceTimerRef.current = window.setTimeout(finalizeSpeechBuffer, 2800);
       };
       rec.onerror = () => {
+        const text = speechBufferRef.current.trim();
+        speechBufferRef.current = '';
         stopAudioHardware();
-        showToast('Speech capture ended — use Simulate sheet or type below', 'warn');
+        if (text) {
+          setTypedInput('');
+          processUtteranceRef.current(text, context, { snrDb: 19 });
+        } else {
+          showToast('Speech capture ended — tap mic again or type below', 'warn');
+        }
       };
-      rec.onend = () => stopAudioHardware();
+      rec.onend = () => {
+        const text = speechBufferRef.current.trim();
+        if (text) {
+          speechBufferRef.current = '';
+          stopAudioHardware();
+          setTypedInput('');
+          processUtteranceRef.current(text, context, { snrDb: 19 });
+        } else {
+          stopAudioHardware();
+        }
+      };
       rec.start();
     } catch {
       stopAudioHardware();

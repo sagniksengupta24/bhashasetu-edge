@@ -222,3 +222,15 @@ describe('Property test: Negated red flags NEVER trigger critical_red_flag', () 
     });
   }
 });
+
+describe('Unrecognized input must NOT hallucinate General Weakness', () => {
+  it('returns primary_symptom "none" for greetings like "hello"', () => {
+    const res = parseClinicalUtterance('hello');
+    expect(res.slots.primary_symptom).toBe('none');
+  });
+
+  it('matches general_malaise only when weakness words are spoken', () => {
+    const res = parseClinicalUtterance('tin din dhore durbolota');
+    expect(res.slots.primary_symptom).toBe('general_malaise');
+  });
+});
