@@ -1,4 +1,5 @@
 {
+  "installCommand": "npm ci --onnxruntime-node-install-cuda=skip",
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "headers": [
