@@ -5,7 +5,12 @@
 //   Tier 3: Automatic window.speechSynthesis + visual caption fallback
 
 import type { NinadaOptions, NinadaProgressEvent, NinadaVoice } from 'ninada';
-import { type ClinicalSlots, LANGUAGE_META, type LanguageCode } from '../slu/schema';
+import {
+  type ClinicalSlots,
+  getSymptomDisplay,
+  LANGUAGE_META,
+  type LanguageCode,
+} from '../slu/schema';
 import { PROMPT_CLIPS, type PromptKey } from './promptClips';
 
 export type NeuralVoiceState = 'idle' | 'loading' | 'ready' | 'error';
@@ -15,27 +20,6 @@ export type NinadaFactory = (
   opts?: NinadaOptions
 ) => Promise<NinadaVoice>;
 
-const NATIVE_SYMPTOM_READBACK: Record<string, { hi: string; bn: string }> = {
-  chest_heaviness: { hi: 'छाती में भारीपन', bn: 'বুকের ভেতর চাপ' },
-  limb_numbness: { hi: 'हाथ पैर सुन्न होना', bn: 'হাত পা অবশ' },
-  presyncope_blackout: { hi: 'आँखों के आगे अंधेरा', bn: 'চোখের সামনে অন্ধকার' },
-  infant_high_fever: { hi: 'बच्चे को तेज़ बुखार', bn: 'শিশুর ভারী জ্বর' },
-  chest_pain: { hi: 'सीने में दर्द', bn: 'বুকে ব্যথা' },
-  unconsciousness: { hi: 'बेहोशी', bn: 'জ্ঞান হারানো' },
-  heavy_bleeding: { hi: 'बहुत खून बहना', bn: 'বেশি রক্ত পড়া' },
-  seizures: { hi: 'दौरा पड़ना', bn: 'খিঁচুনি' },
-  severe_breathing_trouble: { hi: 'गंभीर साँस की दिक्कत', bn: 'গুরুতর শ্বাসকষ্ট' },
-  shortness_of_breath: { hi: 'साँस फूलना', bn: 'শ্বাসকষ্ট' },
-  high_fever: { hi: 'तेज़ बुखार', bn: 'ভারী জ্বর' },
-  fever: { hi: 'बुखार', bn: 'জ্বর' },
-  abdominal_pain: { hi: 'पेट में दर्द', bn: 'পেটে ব্যথা' },
-  stomach_upset: { hi: 'पेट खराब', bn: 'পেট খারাপ' },
-  dizziness: { hi: 'चक्कर आना', bn: 'মাথা ঘোরা' },
-  headache: { hi: 'सिर दर्द', bn: 'মাথা ব্যথা' },
-  cough: { hi: 'खांसी', bn: 'কাশি' },
-  general_malaise: { hi: 'कमज़ोरी', bn: 'দুর্বলতা' },
-};
-
 export function mapAppLangToNinadaLang(lang: LanguageCode): 'hi' | 'bn' {
   // Hinglish uses Devanagari Hindi specialist so Hindi medical terms are never tokenized as raw Latin
   return lang === 'bn' ? 'bn' : 'hi';
@@ -44,7 +28,7 @@ export function mapAppLangToNinadaLang(lang: LanguageCode): 'hi' | 'bn' {
 export function buildNativeReadbackText(slots: ClinicalSlots, lang: LanguageCode): string {
   const target = mapAppLangToNinadaLang(lang);
   const allSymptoms = [slots.primary_symptom, ...slots.secondary_symptoms].map(
-    (s) => NATIVE_SYMPTOM_READBACK[s]?.[target] ?? NATIVE_SYMPTOM_READBACK.general_malaise[target]
+    (s) => getSymptomDisplay(s, target).spoken
   );
   const dur = slots.duration_days ?? 1;
 
@@ -73,6 +57,7 @@ export class VoiceEngine {
   private activeAudioEl: HTMLAudioElement | null = null;
   private activeSources: Set<AudioBufferSourceNode> = new Set();
   private streamAbortController: AbortController | null = null;
+  private playbackGen = 0;
   private muted = false;
   private callbacks: VoiceCallbacks = {};
   private ninadaLoader: () => Promise<NinadaFactory>;
@@ -139,6 +124,7 @@ export class VoiceEngine {
    * Ninada streaming generator, and browser speechSynthesis) to prevent mic collision.
    */
   stopSpeaking(): void {
+    this.playbackGen += 1;
     if (this.streamAbortController) {
       this.streamAbortController.abort();
       this.streamAbortController = null;
@@ -262,6 +248,7 @@ export class VoiceEngine {
     if (this.muted) return;
 
     this.stopSpeaking();
+    const myGen = this.playbackGen;
     const clipUrl = PROMPT_CLIPS[lang]?.[promptKey];
 
     if (clipUrl && typeof Audio !== 'undefined') {
@@ -292,10 +279,12 @@ export class VoiceEngine {
         });
         return;
       } catch {
-        // Fall through to Tier 3
+        if (myGen !== this.playbackGen) return;
+        this.stopSpeaking();
       }
     }
 
+    if (myGen !== this.playbackGen) return;
     this.speakBrowserFallback(fallbackText, lang);
   }
 
@@ -312,6 +301,7 @@ export class VoiceEngine {
     if (this.muted) return;
 
     this.stopSpeaking();
+    const myGen = this.playbackGen;
     const targetLang = mapAppLangToNinadaLang(lang);
     const spokenText = nativeTextOverride || text;
 
@@ -335,7 +325,7 @@ export class VoiceEngine {
             voice: 'female',
             signal: controller.signal,
           })) {
-            if (controller.signal.aborted) break;
+            if (controller.signal.aborted || myGen !== this.playbackGen) break;
             if (!chunk.pcm || chunk.pcm.length === 0) continue;
 
             const sr = chunk.sampleRate || 24000;
@@ -354,20 +344,31 @@ export class VoiceEngine {
             lastSource = source;
             source.onended = () => {
               this.activeSources.delete(source);
-              if (this.activeSources.size === 0 && lastSource === source) {
+              if (
+                this.activeSources.size === 0 &&
+                lastSource === source &&
+                !this.streamAbortController
+              ) {
                 this.callbacks.onSpeakingChange?.(false);
               }
             };
           }
 
-          if (!lastSource && !controller.signal.aborted) {
+          if (this.streamAbortController === controller) {
+            this.streamAbortController = null;
+          }
+          if (
+            (!lastSource || this.activeSources.size === 0) &&
+            !controller.signal.aborted &&
+            myGen === this.playbackGen
+          ) {
             this.callbacks.onSpeakingChange?.(false);
           }
           return;
         } catch {
-          this.callbacks.onSpeakingChange?.(false);
-          if (controller.signal.aborted) return;
-          // Fall through to Tier 3 on synthesis/streaming error
+          if (controller.signal.aborted || myGen !== this.playbackGen) return;
+          // Cancel any already-queued Web Audio chunks before falling back to speechSynthesis
+          this.stopSpeaking();
         } finally {
           if (this.streamAbortController === controller) {
             this.streamAbortController = null;
@@ -376,7 +377,8 @@ export class VoiceEngine {
       }
     }
 
-    this.speakBrowserFallback(text, lang);
+    if (myGen !== this.playbackGen) return;
+    this.speakBrowserFallback(lang === 'hinglish' ? text : spokenText, lang);
   }
 
   private speakBrowserFallback(text: string, lang: LanguageCode): void {

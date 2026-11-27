@@ -234,3 +234,61 @@ describe('Unrecognized input must NOT hallucinate General Weakness', () => {
     expect(res.slots.primary_symptom).toBe('general_malaise');
   });
 });
+
+describe('Expanded Bengali & Hindi native-script symptom & consent coverage', () => {
+  it('handles Bengali য-ফলা (ব্যথা) & শ্বাসকষ্ট in native script', () => {
+    const chest = parseClinicalUtterance('বুকে ব্যথা দুই দিন ধরে');
+    expect(chest.slots.primary_symptom).toBe('chest_pain');
+    expect(chest.redFlagsTriggered).toContain('chest_pain');
+    expect(chest.slots.duration_days).toBe(2);
+
+    const stomach = parseClinicalUtterance('পেটে ব্যথা আর বমি তিন দিন ধরে');
+    expect(stomach.slots.primary_symptom).toBe('abdominal_pain');
+    expect(stomach.slots.secondary_symptoms).toContain('vomiting');
+    expect(stomach.slots.duration_days).toBe(3);
+
+    const breath = parseClinicalUtterance('শ্বাসকষ্ট হচ্ছে');
+    expect(breath.slots.primary_symptom).toBe('shortness_of_breath');
+  });
+
+  it('handles expanded Hindi native-script symptoms (उल्टी, खांसी, पीलिया, पेशाब में जलन)', () => {
+    const res = parseClinicalUtterance('दो दिन से उल्टी और खांसी है');
+    expect(res.slots.primary_symptom).toBe('vomiting');
+    expect(res.slots.secondary_symptoms).toContain('cough');
+    expect(res.slots.duration_days).toBe(2);
+
+    const uti = parseClinicalUtterance('पेशाब में जलन और पीलिया');
+    expect(uti.slots.primary_symptom).toBe('burning_urination');
+    expect(uti.slots.secondary_symptoms).toContain('jaundice');
+  });
+
+  it('normalizes Hindi & Bengali consent words ("हाँ", "नहीं", "হ্যাঁ", "না")', () => {
+    expect(normalizeTranscript('हाँ')).toBe('haan');
+    expect(normalizeTranscript('नहीं')).toBe('nahi');
+    expect(normalizeTranscript('হ্যাঁ')).toBe('haan');
+    expect(normalizeTranscript('না')).toBe('na');
+  });
+
+  it('prioritizes hemoptysis, dry_cough, and diarrhea over generic cough/stomach_upset', () => {
+    const hemo = parseClinicalUtterance('खांसी में खून आ रहा है');
+    expect(hemo.slots.primary_symptom).toBe('hemoptysis');
+    expect(hemo.redFlagsTriggered).toContain('hemoptysis');
+    expect(hemo.slots.severity_grade).toBe('critical_red_flag');
+
+    const dry = parseClinicalUtterance('sukhi khansi hai');
+    expect(dry.slots.primary_symptom).toBe('dry_cough');
+
+    const dia = parseClinicalUtterance('पतला दस्त हो रहा है');
+    expect(dia.slots.primary_symptom).toBe('diarrhea');
+  });
+
+  it('extracts native Bengali & Hindi duration words (আট দিন, ছয় দিন, এক মাস, দুই সপ্তাহ, दो हफ़्ते, तीन महीने)', () => {
+    expect(extractDurationDays('আট দিন')).toBe(8);
+    expect(extractDurationDays('ছয় দিন')).toBe(6);
+    expect(extractDurationDays('এক মাস')).toBe(30);
+    expect(extractDurationDays('দুই সপ্তাহ')).toBe(14);
+    expect(extractDurationDays('दो हफ़्ते')).toBe(14);
+    expect(extractDurationDays('तीन महीने')).toBe(90);
+    expect(extractDurationDays('छह दिन')).toBe(6);
+  });
+});

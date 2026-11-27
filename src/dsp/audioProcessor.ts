@@ -10,6 +10,7 @@ export function downsampleTo16kHz(
 ): Float32Array {
   let totalLength = 0;
   for (const c of chunks) totalLength += c.length;
+  if (totalLength === 0) return new Float32Array(0);
   const merged = new Float32Array(totalLength);
   let offset = 0;
   for (const c of chunks) {

@@ -42,13 +42,16 @@ const WORD_NUMBER_MAP: Record<string, number> = {
   panch: 5,
   five: 5,
   chhe: 6,
+  chhah: 6,
   choy: 6,
+  chhoy: 6,
   six: 6,
   saat: 7,
   sat: 7,
   seven: 7,
   aath: 8,
   aat: 8,
+  at: 8,
   eight: 8,
   nau: 9,
   noy: 9,
@@ -68,10 +71,12 @@ export function extractDurationDays(rawText: string): number | null {
     .trim();
 
   // Months (x30)
-  const monthNum = cleaned.match(/\b(\d+)\s*(mahina|mahine|months?|maash|mash)\b/i);
+  const monthNum = cleaned.match(
+    /\b(\d+)\s*(mahina|mahine|maheenaa?|maheene|months?|maash|mash|mas)\b/i
+  );
   if (monthNum) return parseInt(monthNum[1], 10) * 30;
   const monthWord = cleaned.match(
-    /\b(ek|do|dui|teen|tin|char|chaar|paanch|panch|one|two|three)\s+(mahina|mahine|months?|maash|mash)\b/i
+    /\b(ek|do|dui|teen|tin|char|chaar|paanch|panch|one|two|three)\s+(mahina|mahine|maheenaa?|maheene|months?|maash|mash|mas)\b/i
   );
   if (monthWord) {
     const val = WORD_NUMBER_MAP[monthWord[1].toLowerCase()];
@@ -79,10 +84,12 @@ export function extractDurationDays(rawText: string): number | null {
   }
 
   // Weeks (x7)
-  const weekNum = cleaned.match(/\b(\d+)\s*(hafta|hafte|weeks?|saptah|soptaho|shopta)\b/i);
+  const weekNum = cleaned.match(
+    /\b(\d+)\s*(haftaa?|hafte|haphtaa?|haphte|weeks?|saptah|soptaho|soptah|shopta)\b/i
+  );
   if (weekNum) return parseInt(weekNum[1], 10) * 7;
   const weekWord = cleaned.match(
-    /\b(ek|do|dui|teen|tin|char|chaar|paanch|panch|one|two|three)\s+(hafta|hafte|weeks?|saptah|soptaho|shopta)\b/i
+    /\b(ek|do|dui|teen|tin|char|chaar|paanch|panch|one|two|three)\s+(haftaa?|hafte|haphtaa?|haphte|weeks?|saptah|soptaho|soptah|shopta)\b/i
   );
   if (weekWord) {
     const val = WORD_NUMBER_MAP[weekWord[1].toLowerCase()];
@@ -90,10 +97,10 @@ export function extractDurationDays(rawText: string): number | null {
   }
 
   // Days (x1)
-  const dayNum = cleaned.match(/\b(\d+)\s*(din|dino|days?|diner)\b/i);
+  const dayNum = cleaned.match(/\b(\d+)\s*(din|dino|dinon|days?|diner)\b/i);
   if (dayNum) return parseInt(dayNum[1], 10);
   const dayWord = cleaned.match(
-    /\b(aaj|today|ek|one|do|dui|two|teen|tin|three|char|chaar|four|paanch|panch|five|chhe|choy|six|saat|sat|seven|aath|aat|eight|nau|noy|nine|das|dosh|ten)\s+(din|dino|days?|diner)\b/i
+    /\b(aaj|today|ek|one|do|dui|two|teen|tin|three|char|chaar|four|paanch|panch|five|chhe|chhah|choy|chhoy|six|saat|sat|seven|aath|aat|at|eight|nau|noy|nine|das|dosh|ten)\s+(din|dino|dinon|days?|diner)\b/i
   );
   if (dayWord) {
     const val = WORD_NUMBER_MAP[dayWord[1].toLowerCase()];
@@ -265,6 +272,15 @@ export function parseClinicalUtterance(
   } else if (activeSymptoms.length >= 2 && severityRank[highestSeverity] < severityRank['moderate']) {
     highestSeverity = 'moderate';
   }
+
+  const severityByCanonical = new Map<string, SeverityGrade>(
+    SYMPTOM_LEXICON.map((e) => [e.canonical, e.defaultSeverity || 'mild'])
+  );
+  activeSymptoms.sort(
+    (a, b) =>
+      severityRank[severityByCanonical.get(b) || 'mild'] -
+      severityRank[severityByCanonical.get(a) || 'mild']
+  );
 
   const primarySymptom = activeSymptoms[0] || 'none';
   const secondarySymptoms = activeSymptoms.slice(1);

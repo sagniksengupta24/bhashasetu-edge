@@ -41,6 +41,7 @@ import {
   type StorageUsageInfo,
 } from './db/storageGuard';
 import { startWhisperDspCapture, type WhisperAudioSession } from './dsp/audioProcessor';
+import { normalizeTranscript } from './slu/normalize';
 import {
   buildAnonymizedAbdmFhirBundle,
   extractDurationDays,
@@ -59,6 +60,7 @@ import {
   type IntakeStep,
   LANGUAGE_META,
   type LanguageCode,
+  LEXICON_BY_CANONICAL,
   type ModalTab,
   type PatientProfile,
   type StoredEncounterRecord,
@@ -866,10 +868,16 @@ export default function App() {
       }
 
       if (context === 'consent') {
-        const lower = clean.toLowerCase();
-        if (/\b(nahi|na|no|band|mat|bondho)\b/i.test(lower)) {
+        const normalizedConsent = normalizeTranscript(clean);
+        if (
+          /\b(nahi|na|no|band|mat|bondho)\b/i.test(normalizedConsent) ||
+          /(नहीं|না)/.test(clean)
+        ) {
           handleDeclineConsent(activeLang);
-        } else if (/\b(haan|ha|yes|ji|sahi|ok|thik)\b/i.test(lower)) {
+        } else if (
+          /\b(haan|ha|han|yes|ji|sahi|ok|thik|achha|accha)\b/i.test(normalizedConsent) ||
+          /(हाँ|হ্যাঁ)/.test(clean)
+        ) {
           handleGrantConsent();
         } else {
           speakPrompt('consent', LANGUAGE_META[activeLang].consentPrompt, activeLang);
@@ -901,18 +909,21 @@ export default function App() {
       }
 
       if (context === 'readback' && slots) {
-        const lower = clean.toLowerCase();
-        if (/\b(din|duration|time|samay|somoy)\b/i.test(lower)) {
+        const normalizedReadback = normalizeTranscript(clean);
+        if (/\b(din|duration|time|samay|somoy|mahina|hafta)\b/i.test(normalizedReadback)) {
           setEditingField('duration_days');
           speakPrompt('duration_edit', LANGUAGE_META[activeLang].durationEditPrompt, activeLang);
           return;
         }
-        if (/\b(symptom|lakshan|lokkhon|dard|bukhar|jor)\b/i.test(lower)) {
+        if (/\b(symptom|lakshan|lokkhon|dard|byatha|bukhar|jor)\b/i.test(normalizedReadback)) {
           setEditingField('primary_symptom');
           speakPrompt('symptom_edit', LANGUAGE_META[activeLang].symptomEditPrompt, activeLang);
           return;
         }
-        if (/\b(haan|ha|yes|ji|sahi|save|thik)\b/i.test(lower)) {
+        if (
+          /\b(haan|ha|han|yes|ji|sahi|save|thik|achha|accha)\b/i.test(normalizedReadback) ||
+          /(हाँ|হ্যাঁ)/.test(clean)
+        ) {
           if (slots.confidence_score < 0.85 || lowConfidenceFields.length > 0) {
             showToast('Verify amber low-confidence field before saving', 'warn');
             return;
@@ -936,9 +947,15 @@ export default function App() {
             setLowConfidenceFields((prev) => prev.filter((f) => f !== 'duration_days'));
             setEditingField(null);
             speakReadback(updated, activeLang);
+          } else {
+            showToast('Duration not recognized — try "3 din" or tap below', 'warn');
           }
         } else if (editingField === 'primary_symptom') {
           const parsed = parseClinicalUtterance(clean, { snrDb: liveSnrRef.current });
+          if (parsed.slots.primary_symptom === 'none') {
+            showToast('Symptom not recognized — please try again or tap below', 'warn');
+            return;
+          }
           const updated: ClinicalSlots = {
             ...slots,
             primary_symptom: parsed.slots.primary_symptom,
@@ -1111,10 +1128,12 @@ export default function App() {
         whisperSessionRef.current = null;
         setIsRecording(false);
         setEqBars([18, 24, 18, 28, 20, 24, 18, 22, 18, 16]);
-        if (pcm16k.length > 0) {
-          dispatchPcmToWorker(pcm16k, context);
+        if (pcm16k.length >= 1600) {
+          dispatchPcmToWorker(pcm16k, speechContextRef.current || context);
           return;
         }
+        showToast('Recording too short — speak clearly and try again', 'warn');
+        return;
       }
       const buffered = speechBufferRef.current.trim();
       speechBufferRef.current = '';
@@ -1138,6 +1157,7 @@ export default function App() {
 
     if (asrEngine === 'whisper_worker' && workerState === 'ready') {
       try {
+        speechContextRef.current = context;
         const session = await startWhisperDspCapture({
           onSnrUpdate: (snr) => {
             liveSnrRef.current = snr;
@@ -1148,8 +1168,10 @@ export default function App() {
             whisperSessionRef.current = null;
             setIsRecording(false);
             setEqBars([18, 24, 18, 28, 20, 24, 18, 22, 18, 16]);
-            showToast('60s recording cap reached — decoding audio');
-            dispatchPcmToWorker(pcm16k, context);
+            if (pcm16k.length >= 1600) {
+              showToast('60s recording cap reached — decoding audio');
+              dispatchPcmToWorker(pcm16k, context);
+            }
           },
         });
         whisperSessionRef.current = session;
@@ -1223,6 +1245,7 @@ export default function App() {
         silenceTimerRef.current = window.setTimeout(finalizeSpeechBuffer, 2800);
       };
       rec.onerror = () => {
+        if (recognitionRef.current !== rec) return;
         const text = speechBufferRef.current.trim();
         speechBufferRef.current = '';
         stopAudioHardware();
@@ -1234,6 +1257,7 @@ export default function App() {
         }
       };
       rec.onend = () => {
+        if (recognitionRef.current !== rec) return;
         const text = speechBufferRef.current.trim();
         if (text) {
           speechBufferRef.current = '';
@@ -1252,13 +1276,15 @@ export default function App() {
   };
 
   const handleCompleteVisualFallback = () => {
+    const entry = LEXICON_BY_CANONICAL[tapSymptom];
+    const isRedFlag = Boolean(entry?.isRedFlag);
     const built: ClinicalSlots = {
       primary_symptom: tapSymptom,
       secondary_symptoms: [],
       resolved_symptoms: [],
       negated_symptoms: [],
       duration_days: tapDuration,
-      severity_grade: tapSymptom === 'shortness_of_breath' ? 'severe' : 'moderate',
+      severity_grade: entry?.defaultSeverity || 'moderate',
       spoken_vitals: { bp: null, temperature: null, sugar: null, medications: [] },
       confidence_score: 1.0,
       requires_clinician_review: false,
@@ -1266,7 +1292,7 @@ export default function App() {
     setRawTranscript(`[Visual Fallback] ${getSymptomDisplay(tapSymptom, lang).en}, ${tapDuration}d`);
     setSlots(built);
     setLowConfidenceFields([]);
-    setRedFlagsTriggered([]);
+    setRedFlagsTriggered(isRedFlag ? [tapSymptom] : []);
     setNormalizedTokens([`tap:${tapSymptom}`, `duration:${tapDuration}d`]);
     setStep(3);
     speakReadback(built);

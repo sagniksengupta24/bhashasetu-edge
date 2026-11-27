@@ -149,6 +149,19 @@ function transliterateDevanagariAndBengali(input: string): string {
           } else {
             i += 1;
           }
+        } else if (chars[i + 1] === 'য' && i + 1 < chars.length) {
+          // Handle য-ফলা (e.g., ব্যথা -> b+ya+th+a)
+          out.push('y');
+          const afterJa = chars[i + 2];
+          if (afterJa && BENGALI_MATRAS[afterJa]) {
+            out.push(BENGALI_MATRAS[afterJa]);
+            i += 2;
+          } else if (!isWordEnd(chars, i + 2)) {
+            out.push('a');
+            i += 1;
+          } else {
+            i += 1;
+          }
         }
       } else if (next && BENGALI_MATRAS[next]) {
         out.push(base + BENGALI_MATRAS[next]);
@@ -198,12 +211,22 @@ const PHONETIC_REPLACEMENTS: Array<[RegExp, string]> = [
   [/\b(teez|tez|tej)\b/g, 'tez'],
   [/\b(mareez|mariz|marij)\b/g, 'mareez'],
   [/\b(buke|buker)\b/g, '$1'],
-  [/\b(byatha|betha)\b/g, 'byatha'],
+  [/\b(byatha|betha|bytha|bjtha|bjatha)\b/g, 'byatha'],
   [/\b(kintu|keentu)\b/g, 'kintu'],
   [/\b(ekhon|ekhan)\b/g, 'ekhon'],
   [/\b(shash|shwash|shasho)\b/g, 'shash'],
   [/\b(kosto|koshto)\b/g, 'kosto'],
+  [/\b(shashkosto|shwashkosto|shwashkoshto|shwasokosht|shwasokoshto|shwaskosht)\b/g, 'shash kosto'],
   [/\b(chhilo|chilo)\b/g, 'chhilo'],
+  [/\b(ultee|ulti)\b/g, 'ulti'],
+  [/\b(khaansee|khaansi|khansi|khansee)\b/g, 'khansi'],
+  [/\b(kaashee|kaashi|kashi)\b/g, 'kashi'],
+  [/\b(jwala|jala)\b/g, 'jala'],
+  [/\b(jondis|jondish)\b/g, 'jaundice'],
+  [/\b(soojan|sujan|soojon)\b/g, 'soojan'],
+  [/\b(peeliya|piliya|peelia)\b/g, 'peeliya'],
+  [/\b(zukam|jukaam|jukam)\b/g, 'zukam'],
+  [/\b(hyan|haan|haann)\b/g, 'haan'],
 ];
 
 /**
